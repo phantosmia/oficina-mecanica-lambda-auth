@@ -30,4 +30,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Aviso de implementação pendente
-        run: echo "Placeholder: implementação real pendente. Nada a implantar ainda."
+        run: |
+          echo "Placeholder: implementação real pendente. Nada a implantar ainda."
