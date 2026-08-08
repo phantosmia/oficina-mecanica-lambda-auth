@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - homologacao
+      - producao
+
+jobs:
+  validate:
+    name: Validar sintaxe (placeholder)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validar sintaxe do handler
+        run: python -m py_compile src/handler.py
+
+  deploy-placeholder:
+    name: Deploy (placeholder)
+    if: github.event_name == 'push'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aviso de implementação pendente
+        run: echo "Placeholder: implementação real pendente. Nada a implantar ainda."
