@@ -40,6 +40,12 @@ variable "app_state_key" {
   default     = "aws/dev/terraform.tfstate"
 }
 
+variable "kubernetes_state_key" {
+  description = "Key do state do repositório oficina-mecanica-infra-kubernetes no backend S3 compartilhado, de onde são lidos vpc_id e private_subnet_ids para o VPC Link do proxy ao EKS (ADR-0006). Ajuste para o ambiente real (ex.: kubernetes/homologacao/terraform.tfstate) ao aplicar em homologacao/producao."
+  type        = string
+  default     = "kubernetes/dev/terraform.tfstate"
+}
+
 variable "lambda_execution_role_arn" {
   description = "ARN de uma IAM role existente para a execução das duas Lambdas (autenticação e authorizer). Vazio (padrão) cria uma role própria com as permissões mínimas (logs + acesso a ENI de VPC). Preencha em labs que bloqueiam iam:CreateRole (ex.: AWS Academy, reaproveitando a LabRole)."
   type        = string
@@ -76,8 +82,8 @@ variable "log_retention_days" {
   default     = 14
 }
 
-variable "eks_ingress_hostname" {
-  description = "Hostname do ALB do Ingress da aplicação principal no EKS (k8s/overlays/aws/ingress.yaml do oficina-mecanica-fiap), obtido com `kubectl get ingress -n oficina-mecanica oficina-mecanica-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'`. Vazio (padrão) não cria a rota proxy `/api/{proxy+}` — preencha depois que o Ingress existir para proteger as rotas sensíveis da aplicação principal com o JWT de cliente."
+variable "eks_alb_listener_arn" {
+  description = "ARN do listener HTTP:80 do ALB (interno) do Ingress da aplicação principal no EKS (k8s/overlays/aws/ingress.yaml do oficina-mecanica-fiap, ADR-0006). Vazio (padrão) não cria o VPC Link nem as rotas proxy — preencha depois que o Ingress existir (ver comentário em main.tf, recurso aws_apigatewayv2_integration.eks_proxy, para o passo a passo de obtenção via AWS CLI)."
   type        = string
   default     = ""
 }

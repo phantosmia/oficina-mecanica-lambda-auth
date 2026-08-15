@@ -9,6 +9,7 @@ Essa decisão de arquitetura está documentada no repositório da aplicação pr
 - [RFC-0004 — Escolha da solução de API Gateway](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/rfcs/0004-escolha-do-api-gateway.md)
 - [ADR-0004 — API Gateway como ponto único de entrada e autorização](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0004-api-gateway-como-ponto-de-entrada.md)
 - [ADR-0005 — Lambda de autenticação na VPC do banco de dados](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0005-lambda-auth-na-vpc-do-banco.md)
+- [ADR-0006 — ALB interno + VPC Link como único ponto de entrada público](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0006-alb-interno-vpc-link.md)
 
 ## Arquitetura
 
@@ -22,8 +23,13 @@ flowchart LR
     Cliente -->|"ANY /api/{proxy+}<br/>Authorization: Bearer"| APIGW
     APIGW --> AuthzFn["Lambda: authorizer<br/>(fora de VPC)"]
     AuthzFn -->|"isAuthorized"| APIGW
-    APIGW -.->|"HTTP_PROXY (requer<br/>eks_ingress_hostname)"| EKS["Cluster EKS<br/>(oficina-mecanica-fiap)"]
+
+    Admin(["Admin / e-mail de orçamento"]) -->|"ANY /{proxy+}<br/>(sem authorizer aqui)"| APIGW
+    APIGW -->|"VPC Link<br/>(ENIs na VPC do EKS)"| ALB["ALB interno<br/>(k8s/overlays/aws)"]
+    ALB --> EKS["Cluster EKS<br/>(oficina-mecanica-fiap)"]
 ```
+
+O ALB da aplicação principal é **interno** (não internet-facing, [ADR-0006](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0006-alb-interno-vpc-link.md)) — este API Gateway é o **único** caminho de entrada público, alcançando-o via **VPC Link**. Isso fecha uma lacuna real: antes, qualquer rota "protegida" pelo Lambda Authorizer podia ser contornada batendo direto no ALB, que era público.
 
 Duas funções Lambda, empacotadas a partir do mesmo código (`src/`), com responsabilidades e necessidades de rede diferentes:
 
@@ -116,11 +122,13 @@ Este repositório lê, do mesmo backend S3 compartilhado pelos quatro repositór
 
 - `oficina-mecanica-infra-banco-dados`: `vpc_id`, `private_subnet_ids` (para colocar a função `authenticate` na mesma VPC do RDS) e `rds_secret_arn` (host/porta/banco/usuário/senha do PostgreSQL).
 - `oficina-mecanica-fiap` (`infra/aws`): `app_secret_arn` (de onde vem o `JWT_SECRET_KEY` — o **mesmo** segredo que a aplicação principal usa para validar o token).
+- `oficina-mecanica-infra-kubernetes`: `vpc_id` e `private_subnet_ids` do cluster EKS, para o VPC Link alcançar o ALB interno da aplicação principal (ver "Rota protegida" abaixo e [ADR-0006](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0006-alb-interno-vpc-link.md)).
 
 ```mermaid
 flowchart LR
     DB["oficina-mecanica-infra-banco-dados"] -- "vpc_id, private_subnet_ids,<br/>rds_secret_arn" --> LAMBDA["este repositório"]
     APP["oficina-mecanica-fiap: infra/aws"] -- "app_secret_arn<br/>(JWT_SECRET_KEY)" --> LAMBDA
+    K8S["oficina-mecanica-infra-kubernetes"] -- "vpc_id, private_subnet_ids<br/>(VPC Link)" --> LAMBDA
 ```
 
 **Isso estabelece uma nova posição na ordem de apply da Fase 3**: banco de dados → cluster Kubernetes → aplicação principal (`infra/aws`) → **esta Lambda** (ver o [diagrama de dependência completo](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/arquitetura.md#diagrama-de-dependência-entre-os-repositórios-terraform) no repositório principal). Se o state do ambiente lido (`dev`, `homologacao` ou `producao`) ainda não existir em algum dos dois repositórios acima, o `plan`/`apply` deste repositório falha imediatamente com `Unable to find remote state` — o mesmo comportamento já documentado nos outros repositórios, não um bug.
@@ -135,16 +143,27 @@ A função `authorizer` não faz nenhuma chamada de rede (o `JWT_SECRET_KEY` já
 
 ## Rota protegida (proxy para o EKS)
 
-`ANY /api/{proxy+}` — qualquer rota sensível da aplicação principal fica acessível em `<api_endpoint>/api/<caminho-original>` neste API Gateway (em vez de direto no ALB do EKS), validada pelo Lambda Authorizer (`jwt_client`) antes de ser repassada ao Ingress do cluster via `HTTP_PROXY` (o ALB é internet-facing na porta 80, então não é preciso VPC Link — ver [`k8s/overlays/aws/ingress.yaml`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/k8s/overlays/aws/ingress.yaml)).
+O ALB da aplicação principal é **interno** ([ADR-0006](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0006-alb-interno-vpc-link.md)) — não tem mais IP público. Este API Gateway alcança-o via **VPC Link** (`aws_apigatewayv2_vpc_link.eks`, ENIs nas subnets privadas do cluster) e expõe **duas rotas** sobre a mesma integração:
 
-Essa rota só é criada quando a variável `eks_ingress_hostname` está preenchida — o hostname do ALB não é um output de nenhum Terraform da Fase 3 (é atribuído em tempo de admissão pelo AWS Load Balancer Controller a partir do recurso `Ingress` do Kubernetes, depois que o cluster já está no ar). Obtenha-o e aplique novamente depois que o Ingress existir:
+| Rota | Authorizer | Uso |
+|---|---|---|
+| `ANY /{proxy+}` | Nenhum | Tudo que já funcionava antes de existir o Gateway: login/rotas administrativas (protegidas pelo próprio JWT de admin da aplicação, `get_current_admin` — mecanismo diferente do JWT de cliente), o link de aprovação de orçamento por e-mail (token de uso único, não JWT), tracking sem token, health checks, docs. |
+| `ANY /api/{proxy+}` | `jwt_client` (Lambda Authorizer) | Mesmas rotas, mas com a garantia extra de que o JWT de cliente é validado **na borda**, antes mesmo de a requisição chegar à aplicação — ex.: `GET <api_endpoint>/api/service-orders/42/tracking` com `Authorization: Bearer <token>`. A aplicação principal continua validando o mesmo token internamente como defesa em profundidade (`app/shared/dependencies.py::get_current_client`, ver ADR-0004). |
+
+`/api/*` vence `/*` no roteamento do HTTP API (segmento literal é mais específico que um catch-all), então as duas rotas coexistem sem conflito.
+
+**Consequência importante**: como o ALB deixou de ser público, `PUBLIC_BASE_URL` (usado para montar o link de aprovação de orçamento por e-mail, `app/shared/email.py`) precisa apontar para a **raiz deste API Gateway** (output `public_base_url`), não mais para o ALB — atualize `k8s/overlays/aws/patch-configmap-rds.yaml` no repositório principal depois do primeiro `apply` aqui.
+
+O VPC Link e as duas rotas só são criados quando a variável `eks_alb_listener_arn` está preenchida — nem o hostname nem o ARN do listener do ALB são outputs de nenhum Terraform da Fase 3 (são atribuídos em tempo de admissão pelo AWS Load Balancer Controller a partir do recurso `Ingress` do Kubernetes, depois que o cluster já está no ar). Obtenha-o e aplique novamente depois que o Ingress existir:
 
 ```bash
-kubectl get ingress -n oficina-mecanica oficina-mecanica-api \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+HOSTNAME=$(kubectl get ingress -n oficina-mecanica oficina-mecanica-api \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+ALB_ARN=$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?contains(DNSName, '$(echo $HOSTNAME | cut -d. -f1)')].LoadBalancerArn" -o text)
+aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" \
+  --query "Listeners[?Port==\`80\`].ListenerArn" -o text
 ```
-
-Exemplo: `GET <api_endpoint>/api/service-orders/42/tracking` com `Authorization: Bearer <token>` chega em `GET /service-orders/42/tracking` na aplicação principal, já com o JWT validado na borda — que continua validando o mesmo token internamente como defesa em profundidade (`app/shared/dependencies.py::get_current_client`, ver ADR-0004).
 
 ## CI/CD
 
@@ -178,7 +197,8 @@ Ver [`terraform/variables.tf`](terraform/variables.tf) e [`terraform/outputs.tf`
 
 ## Limitações conhecidas / próximos passos
 
-- **Proxy das rotas sensíveis ao EKS**: implementado (`ANY /api/{proxy+}`, ver "Rota protegida" acima), mas depende de um passo manual — preencher `eks_ingress_hostname` depois que o Ingress da aplicação principal existir (o hostname do ALB não é rastreado por nenhum Terraform da Fase 3). Enquanto a variável estiver vazia, a rota simplesmente não é criada.
+- **Proxy ao EKS via VPC Link**: implementado (ver "Rota protegida" acima), mas depende de um passo manual — preencher `eks_alb_listener_arn` depois que o Ingress da aplicação principal existir (o ALB é criado em tempo de admissão pelo AWS Load Balancer Controller, fora do controle de qualquer Terraform da Fase 3). Enquanto a variável estiver vazia, o VPC Link e as rotas simplesmente não são criados.
+- **`PUBLIC_BASE_URL` precisa ser atualizado manualmente**: depois do primeiro `apply` com `eks_alb_listener_arn` preenchido, copie o output `public_base_url` para `k8s/overlays/aws/patch-configmap-rds.yaml` no repositório principal — não há automação (`terraform_remote_state`) para isso ainda, já que o ConfigMap é aplicado via `kubectl`/CI daquele repositório, não por este Terraform.
 - **Granularidade da proteção**: a rota proxy protege por prefixo (`/api/*`), não rota a rota — todo o tráfego sob esse prefixo exige um JWT de cliente válido. Se no futuro for necessário que só *algumas* rotas da aplicação principal exijam o token (e outras continuem públicas através do Gateway), isso precisa de rotas explícitas por caminho em vez do proxy catch-all atual.
 - **Escopo do JWT de cliente**: o token emitido aqui autentica a *pessoa* (CPF), não a *ordem de serviço* — a aplicação principal (`get_current_client`) não verifica se o cliente do token é o dono da OS consultada além do que a própria query/lookup já faz. Isso é equivalente ao mecanismo público anterior (`document_number` na query), não uma regressão, mas vale revisar se o escopo do token precisa ficar mais restrito no futuro (ex.: `order_id` como claim).
 

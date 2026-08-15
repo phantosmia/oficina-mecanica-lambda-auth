@@ -34,6 +34,11 @@ output "lambda_role_arn" {
 }
 
 output "protected_proxy_base_url" {
-  description = "URL base das rotas sensiveis protegidas por CPF, proxeadas ao Ingress do EKS (null se eks_ingress_hostname nao estiver configurado)."
-  value       = var.eks_ingress_hostname != "" ? "${aws_apigatewayv2_api.main.api_endpoint}/api" : null
+  description = "URL base das rotas protegidas por CPF na borda (/api/*), proxeadas ao ALB interno do EKS via VPC Link (null se eks_alb_listener_arn nao estiver configurado)."
+  value       = var.eks_alb_listener_arn != "" ? "${aws_apigatewayv2_api.main.api_endpoint}/api" : null
+}
+
+output "public_base_url" {
+  description = "URL raiz deste API Gateway — use como PUBLIC_BASE_URL na aplicacao principal (k8s/overlays/aws/patch-configmap-rds.yaml) depois que o ALB interno estiver acessivel via VPC Link (null se eks_alb_listener_arn nao estiver configurado)."
+  value       = var.eks_alb_listener_arn != "" ? aws_apigatewayv2_api.main.api_endpoint : null
 }

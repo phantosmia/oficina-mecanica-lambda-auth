@@ -5,8 +5,9 @@ aws_region   = "us-east-1"
 tf_state_bucket = "oficina-mecanica-fiap-terraform-state"
 tf_state_region = "us-east-1"
 
-database_state_key = "database/dev/terraform.tfstate"
-app_state_key       = "aws/dev/terraform.tfstate"
+database_state_key   = "database/dev/terraform.tfstate"
+app_state_key        = "aws/dev/terraform.tfstate"
+kubernetes_state_key = "kubernetes/dev/terraform.tfstate"
 
 # Preencha com o ARN de uma role existente (ex.: LabRole) em labs que
 # bloqueiam iam:CreateRole (AWS Academy). Vazio cria uma role própria.
@@ -19,7 +20,8 @@ lambda_memory_size = 256
 lambda_timeout     = 10
 log_retention_days = 14
 
-# Preencha depois que o Ingress da aplicacao principal existir, para
-# habilitar a rota proxy /api/{proxy+} (protegida pelo JWT de cliente):
-# kubectl get ingress -n oficina-mecanica oficina-mecanica-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-eks_ingress_hostname = ""
+# Preencha depois que o Ingress da aplicacao principal existir (o ALB e
+# interno, ADR-0006), para habilitar o VPC Link e as rotas proxy. Veja o
+# passo a passo (AWS CLI) no comentario do recurso
+# aws_apigatewayv2_integration.eks_proxy em main.tf.
+eks_alb_listener_arn = ""
