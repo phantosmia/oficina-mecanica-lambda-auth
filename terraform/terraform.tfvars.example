@@ -1,0 +1,25 @@
+project_name = "oficina-mecanica-fiap"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+tf_state_bucket = "oficina-mecanica-fiap-terraform-state"
+tf_state_region = "us-east-1"
+
+database_state_key = "database/dev/terraform.tfstate"
+app_state_key       = "aws/dev/terraform.tfstate"
+
+# Preencha com o ARN de uma role existente (ex.: LabRole) em labs que
+# bloqueiam iam:CreateRole (AWS Academy). Vazio cria uma role própria.
+lambda_execution_role_arn = ""
+
+jwt_algorithm               = "HS256"
+access_token_expire_minutes = 30
+
+lambda_memory_size = 256
+lambda_timeout     = 10
+log_retention_days = 14
+
+# Preencha depois que o Ingress da aplicacao principal existir, para
+# habilitar a rota proxy /api/{proxy+} (protegida pelo JWT de cliente):
+# kubectl get ingress -n oficina-mecanica oficina-mecanica-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+eks_ingress_hostname = ""
