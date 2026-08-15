@@ -25,6 +25,19 @@ data "terraform_remote_state" "app" {
   }
 }
 
+# Usado só pela rota proxy ao EKS (VPC Link, ver "Proxy para o cluster EKS"
+# abaixo) — para colocar o VPC Link na mesma VPC/subnets privadas do ALB
+# (agora interno, ADR-0006).
+data "terraform_remote_state" "kubernetes" {
+  backend = "s3"
+
+  config = {
+    bucket = var.tf_state_bucket
+    key    = var.kubernetes_state_key
+    region = var.tf_state_region
+  }
+}
+
 # Lidas em tempo de apply e injetadas como variável de ambiente das Lambdas
 # (ver locals.rds_connection / locals.jwt_secret_key abaixo) — o mesmo padrão
 # já usado por infra/aws/main.tf no repositório principal, que grava
@@ -284,38 +297,86 @@ resource "aws_lambda_permission" "apigw_invoke_authorizer" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# --- Proxy para o cluster EKS (rotas sensíveis protegidas por CPF) -------
-# O ALB do Ingress da aplicação principal (oficina-mecanica-fiap, k8s/overlays/aws)
-# é criado em tempo de admissão pelo AWS Load Balancer Controller a partir de
-# um recurso Ingress do Kubernetes — não é um recurso nem um output do
-# Terraform de nenhum dos repositorios da Fase 3. Por isso o hostname chega
-# aqui via variável manual (var.eks_ingress_hostname), populada depois que o
-# Ingress existir: `kubectl get ingress -n oficina-mecanica oficina-mecanica-api
-# -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` — mesmo padrão já
-# usado para `allowed_cidr_blocks` em oficina-mecanica-infra-banco-dados
-# (valor de outro dominio que não vira output de Terraform automaticamente).
-# Enquanto a variável estiver vazia (padrão), esta rota não é criada — o
-# restante da Lambda funciona normalmente sem ela.
+# --- Proxy para o cluster EKS, via VPC Link ------------------------------
+# O ALB do Ingress da aplicação principal (oficina-mecanica-fiap,
+# k8s/overlays/aws) é `internal` (não internet-facing, ver ADR-0006) —
+# só é alcançável de dentro da VPC do EKS. Este API Gateway passa a ser o
+# único caminho de entrada público, alcançando o ALB via VPC Link (ENIs
+# nas mesmas subnets privadas do cluster, lidas de
+# data.terraform_remote_state.kubernetes).
 #
-# O ALB é internet-facing na porta 80 (ver k8s/overlays/aws/ingress.yaml do
-# repositório principal), então um integration_type HTTP_PROXY simples
-# alcança-o via internet, sem precisar de um VPC Link.
-resource "aws_apigatewayv2_integration" "eks_proxy" {
-  count = var.eks_ingress_hostname != "" ? 1 : 0
+# Diferente do proxy público simples (HTTP_PROXY com URL), uma integração
+# privada via VPC Link aponta para o ARN do LISTENER do ALB, não para o seu
+# DNS — outro valor que não é output de nenhum Terraform da Fase 3 (o ALB é
+# criado em tempo de admissão pelo AWS Load Balancer Controller a partir do
+# Ingress do Kubernetes). Populado manualmente via var.eks_alb_listener_arn
+# depois que o Ingress existir:
+#   ALB_ARN=$(aws elbv2 describe-load-balancers --query \
+#     "LoadBalancers[?contains(DNSName, '<prefixo-do-hostname-do-ingress>')].LoadBalancerArn" -o text)
+#   aws elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" \
+#     --query "Listeners[?Port==\`80\`].ListenerArn" -o text
+# Enquanto a variável estiver vazia (padrão), o VPC Link e as duas rotas
+# abaixo não são criados — o restante da Lambda funciona normalmente sem eles.
+resource "aws_security_group" "vpc_link" {
+  count = var.eks_alb_listener_arn != "" ? 1 : 0
 
-  api_id                 = aws_apigatewayv2_api.main.id
-  integration_type       = "HTTP_PROXY"
-  integration_method     = "ANY"
-  integration_uri        = "http://${var.eks_ingress_hostname}/{proxy}"
-  payload_format_version = "1.0"
+  name        = "${local.name_prefix}-vpc-link"
+  description = "Saida do VPC Link do API Gateway em direcao ao ALB interno do EKS"
+  vpc_id      = data.terraform_remote_state.kubernetes.outputs.vpc_id
+
+  egress {
+    description = "Todo trafego de saida (inclui HTTP para o ALB interno)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = local.common_tags
 }
 
-# Convenção: qualquer rota sensível da aplicação principal que precise de
-# autenticação via CPF fica acessível em `/api/<caminho-original>` neste API
-# Gateway (em vez de direto no ALB), validada pelo `jwt_client` authorizer
-# antes de ser repassada ao Ingress do EKS.
+resource "aws_apigatewayv2_vpc_link" "eks" {
+  count = var.eks_alb_listener_arn != "" ? 1 : 0
+
+  name               = "${local.name_prefix}-eks"
+  subnet_ids         = data.terraform_remote_state.kubernetes.outputs.private_subnet_ids
+  security_group_ids = [aws_security_group.vpc_link[0].id]
+
+  tags = local.common_tags
+}
+
+resource "aws_apigatewayv2_integration" "eks_proxy" {
+  count = var.eks_alb_listener_arn != "" ? 1 : 0
+
+  api_id             = aws_apigatewayv2_api.main.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "ANY"
+  integration_uri    = var.eks_alb_listener_arn
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.eks[0].id
+}
+
+# Rota geral, SEM o authorizer de CPF: login/rotas administrativas (que já
+# têm sua própria proteção via JWT de admin, app/shared/dependencies.py::
+# get_current_admin — um mecanismo totalmente diferente do JWT de cliente),
+# o link de aprovação de orçamento por e-mail (token de uso único, não JWT)
+# e o tracking sem token continuam alcançáveis, exatamente como quando o
+# ALB ainda era público — só que agora via Gateway. PUBLIC_BASE_URL
+# (usado no e-mail de orçamento, ver app/shared/email.py) deve apontar para
+# a raiz deste API Gateway (output public_base_url), não mais para o ALB.
+resource "aws_apigatewayv2_route" "eks_public_proxy" {
+  count = var.eks_alb_listener_arn != "" ? 1 : 0
+
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "ANY /{proxy+}"
+  target    = "integrations/${aws_apigatewayv2_integration.eks_proxy[0].id}"
+}
+
+# Rota mais específica (`/api/*` vence `/*` no roteamento do HTTP API),
+# COM o authorizer de CPF — para quem quer a garantia extra de validação
+# na borda antes mesmo de chegar à aplicação (ex.: tracking de OS).
 resource "aws_apigatewayv2_route" "eks_proxy" {
-  count = var.eks_ingress_hostname != "" ? 1 : 0
+  count = var.eks_alb_listener_arn != "" ? 1 : 0
 
   api_id             = aws_apigatewayv2_api.main.id
   route_key          = "ANY /api/{proxy+}"
