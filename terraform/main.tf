@@ -264,12 +264,8 @@ resource "aws_lambda_permission" "apigw_invoke_authenticate" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# Authorizer REQUEST (respostas simples do HTTP API) disponibilizado para as
-# demais rotas protegidas por CPF. Nenhuma rota é anexada a ele ainda: proteger
-# as rotas sensíveis da aplicação principal exige um integration_uri apontando
-# para o Load Balancer/Ingress do EKS, que hoje não é um output do Terraform
-# (é criado em tempo de admissão pelo AWS Load Balancer Controller a partir de
-# um recurso Ingress do Kubernetes) — ver README, seção "Próximos passos".
+# Authorizer REQUEST (respostas simples do HTTP API), usado pela rota proxy
+# abaixo para proteger o acesso ao cluster EKS com o JWT de cliente.
 resource "aws_apigatewayv2_authorizer" "jwt_client" {
   api_id                            = aws_apigatewayv2_api.main.id
   name                              = "${local.name_prefix}-jwt-client"
@@ -286,4 +282,44 @@ resource "aws_lambda_permission" "apigw_invoke_authorizer" {
   function_name = aws_lambda_function.authorizer.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+# --- Proxy para o cluster EKS (rotas sensíveis protegidas por CPF) -------
+# O ALB do Ingress da aplicação principal (oficina-mecanica-fiap, k8s/overlays/aws)
+# é criado em tempo de admissão pelo AWS Load Balancer Controller a partir de
+# um recurso Ingress do Kubernetes — não é um recurso nem um output do
+# Terraform de nenhum dos repositorios da Fase 3. Por isso o hostname chega
+# aqui via variável manual (var.eks_ingress_hostname), populada depois que o
+# Ingress existir: `kubectl get ingress -n oficina-mecanica oficina-mecanica-api
+# -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'` — mesmo padrão já
+# usado para `allowed_cidr_blocks` em oficina-mecanica-infra-banco-dados
+# (valor de outro dominio que não vira output de Terraform automaticamente).
+# Enquanto a variável estiver vazia (padrão), esta rota não é criada — o
+# restante da Lambda funciona normalmente sem ela.
+#
+# O ALB é internet-facing na porta 80 (ver k8s/overlays/aws/ingress.yaml do
+# repositório principal), então um integration_type HTTP_PROXY simples
+# alcança-o via internet, sem precisar de um VPC Link.
+resource "aws_apigatewayv2_integration" "eks_proxy" {
+  count = var.eks_ingress_hostname != "" ? 1 : 0
+
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "HTTP_PROXY"
+  integration_method     = "ANY"
+  integration_uri        = "http://${var.eks_ingress_hostname}/{proxy}"
+  payload_format_version = "1.0"
+}
+
+# Convenção: qualquer rota sensível da aplicação principal que precise de
+# autenticação via CPF fica acessível em `/api/<caminho-original>` neste API
+# Gateway (em vez de direto no ALB), validada pelo `jwt_client` authorizer
+# antes de ser repassada ao Ingress do EKS.
+resource "aws_apigatewayv2_route" "eks_proxy" {
+  count = var.eks_ingress_hostname != "" ? 1 : 0
+
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = "ANY /api/{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.eks_proxy[0].id}"
+  authorization_type = "CUSTOM"
+  authorizer_id      = aws_apigatewayv2_authorizer.jwt_client.id
 }

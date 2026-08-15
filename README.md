@@ -19,10 +19,10 @@ flowchart LR
     AuthFn -->|"SELECT ... WHERE<br/>document_number = :cpf"| RDS[("Amazon RDS<br/>PostgreSQL")]
     AuthFn -->|"JWT (sub=cpf,<br/>type=client)"| Cliente
 
-    Cliente -->|"rota protegida<br/>Authorization: Bearer"| APIGW
+    Cliente -->|"ANY /api/{proxy+}<br/>Authorization: Bearer"| APIGW
     APIGW --> AuthzFn["Lambda: authorizer<br/>(fora de VPC)"]
     AuthzFn -->|"isAuthorized"| APIGW
-    APIGW -.->|"proxy (próximo passo,<br/>ver 'Limitações conhecidas')"| EKS["Cluster EKS<br/>(oficina-mecanica-fiap)"]
+    APIGW -.->|"HTTP_PROXY (requer<br/>eks_ingress_hostname)"| EKS["Cluster EKS<br/>(oficina-mecanica-fiap)"]
 ```
 
 Duas funções Lambda, empacotadas a partir do mesmo código (`src/`), com responsabilidades e necessidades de rede diferentes:
@@ -74,15 +74,15 @@ terraform/          # Lambda, IAM, API Gateway, integração via terraform_remot
 ```
 
 ```json
-// 404 — CPF válido, mas sem cliente cadastrado (ver "Cliente inexistente vs. inativo" abaixo)
+// 404 — CPF inexistente OU cliente com status "inativo" (mesma resposta, de propósito — ver abaixo)
 { "detail": "Cliente não encontrado ou inativo para este CPF." }
 ```
 
-O JWT emitido tem o mesmo formato de claims (`sub`, `exp`) que `create_access_token` na aplicação principal — `sub` é o CPF (dígitos, sem máscara) e há uma claim extra `type: "client"` (mais `client_id`) para a aplicação principal poder diferenciar, no futuro, um token de cliente de um token de administrador (ver "Limitações conhecidas").
+O JWT emitido tem o mesmo formato de claims (`sub`, `exp`) que `create_access_token` na aplicação principal — `sub` é o CPF (dígitos, sem máscara) e há uma claim extra `type: "client"` (mais `client_id`) que a aplicação principal usa para diferenciar um token de cliente de um token de administrador (`app/shared/dependencies.py::get_current_client`).
 
 ### Cliente inexistente vs. inativo
 
-A tabela `clients` da aplicação principal não tem hoje uma coluna de status explícita (só `id`, `name`, `document_type`, `document_number`, `email`, `phone`) — ver [`app/shared/models.py`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/app/shared/models.py). Por isso, "consultar a existência e o status do cliente" (requisito da Fase 3) hoje se resume a "o registro existe": não há como diferenciar um cliente inativo de um cliente inexistente sem uma mudança de schema na aplicação principal, fora do escopo deste repositório.
+A tabela `clients` da aplicação principal tem uma coluna `status` (`ativo`/`inativo`, migration `20260815_0003`) — ver [`app/shared/models.py`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/app/shared/models.py). Esta Lambda consulta esse campo (`db.py::find_client_by_document`) e recusa a emissão de JWT para um cliente `inativo`, devolvendo **a mesma resposta 404** de um CPF inexistente — de propósito, para não confirmar a quem não se autenticou se aquele CPF pertence a um cliente inativo ou simplesmente não existe.
 
 ## Uso local
 
@@ -133,6 +133,19 @@ Isso exige um passo manual: o security group do RDS (`oficina-mecanica-infra-ban
 
 A função `authorizer` não faz nenhuma chamada de rede (o `JWT_SECRET_KEY` já chega via variável de ambiente, definida em tempo de `apply` — ver "Terraform / Deploy") e roda fora de VPC, evitando o custo/latência de ENI sem necessidade.
 
+## Rota protegida (proxy para o EKS)
+
+`ANY /api/{proxy+}` — qualquer rota sensível da aplicação principal fica acessível em `<api_endpoint>/api/<caminho-original>` neste API Gateway (em vez de direto no ALB do EKS), validada pelo Lambda Authorizer (`jwt_client`) antes de ser repassada ao Ingress do cluster via `HTTP_PROXY` (o ALB é internet-facing na porta 80, então não é preciso VPC Link — ver [`k8s/overlays/aws/ingress.yaml`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/k8s/overlays/aws/ingress.yaml)).
+
+Essa rota só é criada quando a variável `eks_ingress_hostname` está preenchida — o hostname do ALB não é um output de nenhum Terraform da Fase 3 (é atribuído em tempo de admissão pelo AWS Load Balancer Controller a partir do recurso `Ingress` do Kubernetes, depois que o cluster já está no ar). Obtenha-o e aplique novamente depois que o Ingress existir:
+
+```bash
+kubectl get ingress -n oficina-mecanica oficina-mecanica-api \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+```
+
+Exemplo: `GET <api_endpoint>/api/service-orders/42/tracking` com `Authorization: Bearer <token>` chega em `GET /service-orders/42/tracking` na aplicação principal, já com o JWT validado na borda — que continua validando o mesmo token internamente como defesa em profundidade (`app/shared/dependencies.py::get_current_client`, ver ADR-0004).
+
 ## CI/CD
 
 Workflow em [`.github/workflows/ci.yml`](.github/workflows/ci.yml), com três jobs:
@@ -165,9 +178,9 @@ Ver [`terraform/variables.tf`](terraform/variables.tf) e [`terraform/outputs.tf`
 
 ## Limitações conhecidas / próximos passos
 
-- **Proxy das rotas sensíveis ao EKS**: o `aws_apigatewayv2_authorizer` (`jwt_client`) está criado e pronto para uso, mas nenhuma rota deste API Gateway proxeia ainda para o cluster EKS — isso exige o DNS do Load Balancer/Ingress da aplicação principal, que hoje não é um output do Terraform (é criado em tempo de admissão pelo AWS Load Balancer Controller a partir de um recurso `Ingress` do Kubernetes, não por um recurso Terraform). Fica para uma etapa futura.
-- **Diferenciação de token na aplicação principal**: `app/shared/dependencies.py::get_current_admin` hoje só aceita `sub == settings.admin_username`; um JWT de cliente emitido por esta Lambda (`sub` = CPF, `type: "client"`) seria rejeitado por qualquer rota que dependa dele. Adaptar a aplicação principal para aceitar e diferenciar os dois tipos de token (ver ADR-0004, "a aplicação precisa continuar aceitando e diferenciando esses formatos por tipo de rota") é um trabalho do repositório `oficina-mecanica-fiap`, fora do escopo deste repositório.
-- **Status do cliente**: ver "Cliente inexistente vs. inativo" acima.
+- **Proxy das rotas sensíveis ao EKS**: implementado (`ANY /api/{proxy+}`, ver "Rota protegida" acima), mas depende de um passo manual — preencher `eks_ingress_hostname` depois que o Ingress da aplicação principal existir (o hostname do ALB não é rastreado por nenhum Terraform da Fase 3). Enquanto a variável estiver vazia, a rota simplesmente não é criada.
+- **Granularidade da proteção**: a rota proxy protege por prefixo (`/api/*`), não rota a rota — todo o tráfego sob esse prefixo exige um JWT de cliente válido. Se no futuro for necessário que só *algumas* rotas da aplicação principal exijam o token (e outras continuem públicas através do Gateway), isso precisa de rotas explícitas por caminho em vez do proxy catch-all atual.
+- **Escopo do JWT de cliente**: o token emitido aqui autentica a *pessoa* (CPF), não a *ordem de serviço* — a aplicação principal (`get_current_client`) não verifica se o cliente do token é o dono da OS consultada além do que a própria query/lookup já faz. Isso é equivalente ao mecanismo público anterior (`document_number` na query), não uma regressão, mas vale revisar se o escopo do token precisa ficar mais restrito no futuro (ex.: `order_id` como claim).
 
 ## Repositórios relacionados
 

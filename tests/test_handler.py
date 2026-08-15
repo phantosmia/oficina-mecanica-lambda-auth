@@ -29,7 +29,7 @@ def test_authenticate_handler_returns_token_for_existing_client(monkeypatch, fak
         handler,
         "find_client_by_document",
         lambda db, document_number: ClientRecord(
-            id=7, name="Cliente Teste", document_number=document_number, email="cliente@example.com"
+            id=7, name="Cliente Teste", document_number=document_number, email="cliente@example.com", status="ativo"
         ),
     )
 
@@ -53,6 +53,25 @@ def test_authenticate_handler_returns_404_for_unknown_client(monkeypatch, fake_c
     response = handler.authenticate_handler(_event_with_body({"cpf": VALID_CPF}), fake_context)
 
     assert response["statusCode"] == 404
+
+
+def test_authenticate_handler_returns_404_for_inactive_client(monkeypatch, fake_context):
+    """Cliente inativo recebe a mesma resposta de cliente inexistente — não
+    revela a quem não se autenticou se o CPF pertence a um cliente inativo."""
+    monkeypatch.setattr(handler, "find_client_by_document", lambda db, document_number: None)
+    unknown_client_response = handler.authenticate_handler(_event_with_body({"cpf": VALID_CPF}), fake_context)
+
+    monkeypatch.setattr(
+        handler,
+        "find_client_by_document",
+        lambda db, document_number: ClientRecord(
+            id=7, name="Cliente Inativo", document_number=document_number, email=None, status="inativo"
+        ),
+    )
+    inactive_client_response = handler.authenticate_handler(_event_with_body({"cpf": VALID_CPF}), fake_context)
+
+    assert inactive_client_response["statusCode"] == 404
+    assert inactive_client_response["body"] == unknown_client_response["body"]
 
 
 def test_authenticate_handler_returns_400_for_invalid_cpf(fake_context):

@@ -56,8 +56,12 @@ def authenticate_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     db_settings = load_db_settings()
     client = find_client_by_document(db_settings, document_number)
-    if client is None:
-        logger.info(json.dumps({"event": "auth_client_not_found", "request_id": request_id}))
+    # Cliente inexistente e cliente inativo recebem a mesma resposta, de
+    # propósito: não revelar a quem não se autenticou se um CPF pertence a
+    # um cliente inativo ou simplesmente não existe (ver docs/regras-negocio.md
+    # do repositório principal).
+    if client is None or not client.is_active:
+        logger.info(json.dumps({"event": "auth_client_not_found_or_inactive", "request_id": request_id}))
         return _response(404, {"detail": "Cliente não encontrado ou inativo para este CPF."})
 
     jwt_settings = load_jwt_settings()

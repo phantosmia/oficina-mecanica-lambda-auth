@@ -18,6 +18,8 @@ import pg8000.native
 
 from settings import DbSettings
 
+ACTIVE_STATUS = "ativo"
+
 
 @dataclass(frozen=True)
 class ClientRecord:
@@ -25,16 +27,20 @@ class ClientRecord:
     name: str
     document_number: str
     email: str | None
+    status: str
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == ACTIVE_STATUS
 
 
 def find_client_by_document(db: DbSettings, document_number: str) -> ClientRecord | None:
     """Busca um cliente pelo CPF (dígitos, sem máscara).
 
-    Retorna `None` se não existir nenhum cliente com esse `document_number`,
-    que é a definição de "cliente inexistente ou inativo" hoje: a tabela
-    `clients` do repositório principal não tem uma coluna de status
-    explícita (ver README), então a própria existência do registro é o
-    único sinal de status disponível.
+    Retorna `None` se não existir nenhum cliente com esse `document_number`.
+    A coluna `status` (`ativo`/`inativo`, ver migration `20260815_0003` do
+    repositório principal) já vem no retorno — quem decide o que fazer com
+    um cliente `inativo` é o chamador (`handler.py`), não esta função.
     """
     connection = pg8000.native.Connection(
         user=db.username,
@@ -45,7 +51,7 @@ def find_client_by_document(db: DbSettings, document_number: str) -> ClientRecor
     )
     try:
         rows = connection.run(
-            "SELECT id, name, document_number, email FROM clients WHERE document_number = :document_number",
+            "SELECT id, name, document_number, email, status FROM clients WHERE document_number = :document_number",
             document_number=document_number,
         )
     finally:
@@ -55,4 +61,4 @@ def find_client_by_document(db: DbSettings, document_number: str) -> ClientRecor
         return None
 
     row = rows[0]
-    return ClientRecord(id=row[0], name=row[1], document_number=row[2], email=row[3])
+    return ClientRecord(id=row[0], name=row[1], document_number=row[2], email=row[3], status=row[4])

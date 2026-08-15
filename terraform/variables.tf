@@ -76,6 +76,12 @@ variable "log_retention_days" {
   default     = 14
 }
 
+variable "eks_ingress_hostname" {
+  description = "Hostname do ALB do Ingress da aplicação principal no EKS (k8s/overlays/aws/ingress.yaml do oficina-mecanica-fiap), obtido com `kubectl get ingress -n oficina-mecanica oficina-mecanica-api -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'`. Vazio (padrão) não cria a rota proxy `/api/{proxy+}` — preencha depois que o Ingress existir para proteger as rotas sensíveis da aplicação principal com o JWT de cliente."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags adicionais aplicadas aos recursos AWS."
   type        = map(string)
