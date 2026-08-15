@@ -7,10 +7,24 @@ on:
       - homologacao
       - producao
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION || 'us-east-1' }}
+  TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+
 jobs:
-  validate:
-    name: Validar sintaxe (placeholder)
+  test:
+    name: Testes (pytest)
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
@@ -20,15 +34,129 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validar sintaxe do handler
-        run: python -m py_compile src/handler.py
+      - name: Instalar dependencias
+        run: pip install -r requirements-dev.txt
 
-  deploy-placeholder:
-    name: Deploy (placeholder)
-    if: github.event_name == 'push'
-    needs: validate
+      - name: Rodar testes
+        run: pytest tests/ -v
+
+  plan:
+    name: Terraform Plan (PR)
+    if: github.event_name == 'pull_request'
+    needs: test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+
     steps:
-      - name: Aviso de implementação pendente
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configurar Python (empacotamento da Lambda)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Terraform init (sem backend remoto — plan de validação, não usa state real)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+      # Lê o state real (dev) dos repositórios oficina-mecanica-infra-banco-dados
+      # e oficina-mecanica-fiap (infra/aws) via terraform_remote_state — se o
+      # ambiente "dev" ainda não tiver sido aplicado em algum deles, este plan
+      # falha com "Unable to find remote state" (comportamento esperado, ver
+      # README: "Ordem de apply entre os repositórios").
+      - name: Terraform plan
+        run: terraform plan -var="environment=dev-preview" -var="tf_state_bucket=${{ env.TF_STATE_BUCKET }}" -var="tf_state_region=${{ env.TF_STATE_REGION }}"
+
+  apply:
+    name: Apply (${{ github.ref_name }})
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Configurar Python (empacotamento da Lambda)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Preparar backend remoto do Terraform
+        env:
+          TF_BACKEND_CONFIG: ${{ secrets.TF_BACKEND_CONFIG }}
         run: |
-          echo "Placeholder: implementação real pendente. Nada a implantar ainda."
+          if [ -n "${TF_BACKEND_CONFIG}" ]; then
+            printf '%s\n' "${TF_BACKEND_CONFIG}" | sed "s#/dev/#/${{ github.ref_name }}/#" > backend.hcl
+          else
+            if [ -z "${TF_STATE_BUCKET}" ] || [ -z "${TF_LOCK_TABLE}" ]; then
+              echo "Configure o secret TF_BACKEND_CONFIG ou as variables TF_STATE_BUCKET e TF_LOCK_TABLE." >&2
+              exit 1
+            fi
+
+            cat > backend.hcl <<EOF
+          bucket         = "${TF_STATE_BUCKET}"
+          key            = "lambda/${{ github.ref_name }}/terraform.tfstate"
+          region         = "${TF_STATE_REGION}"
+          dynamodb_table = "${TF_LOCK_TABLE}"
+          encrypt        = true
+          EOF
+          fi
+
+      - name: Terraform init
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Terraform plan
+        run: |
+          terraform plan -out=tfplan \
+            -var="environment=${{ github.ref_name }}" \
+            -var="database_state_key=database/${{ github.ref_name }}/terraform.tfstate" \
+            -var="app_state_key=aws/${{ github.ref_name }}/terraform.tfstate" \
+            -var="tf_state_bucket=${{ env.TF_STATE_BUCKET }}" \
+            -var="tf_state_region=${{ env.TF_STATE_REGION }}"
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Resumo dos outputs
+        run: |
+          echo "Endpoint de autenticacao (POST): $(terraform output -raw auth_endpoint)"
+          echo "Authorizer ID (para futuras rotas protegidas): $(terraform output -raw authorizer_id)"

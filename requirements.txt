@@ -1,1 +1,4 @@
-# boto3, pyjwt etc. quando a implementação real chegar
+# boto3/botocore não entram aqui: o runtime do AWS Lambda já os traz
+# pré-instalados. Empacotá-los de novo só infla o .zip sem necessidade.
+PyJWT==2.9.0
+pg8000==1.31.2

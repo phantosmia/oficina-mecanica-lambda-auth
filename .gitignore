@@ -3,3 +3,20 @@ __pycache__/
 .venv/
 .pytest_cache/
 .env
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan*
+backend.hcl
+terraform.tfvars
+crash.log
+crash.*.log
+.DS_Store
+
+# Pacote da Lambda gerado por terraform/main.tf (null_resource.build)
+terraform/build/
+terraform/build.zip
