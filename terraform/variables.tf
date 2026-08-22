@@ -96,7 +96,7 @@ variable "new_relic_license_key" {
 }
 
 variable "new_relic_account_id" {
-  description = "Account ID do New Relic (ADR-0007). Só é usado quando new_relic_license_key está preenchida."
+  description = "Account ID do New Relic (ADR-0007). Usado nas variáveis de ambiente das Lambdas quando new_relic_license_key está preenchida. A integração AWS↔New Relic para RDS/API Gateway (mesmo account ID, mais a user API key) fica num Terraform root separado — ver newrelic-aws-integration/."
   type        = string
   default     = ""
 }

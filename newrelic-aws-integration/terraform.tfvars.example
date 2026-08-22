@@ -1,0 +1,15 @@
+project_name = "oficina-mecanica-fiap"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+# Account ID do New Relic (mesmo já usado em ../terraform/terraform.tfvars
+# para new_relic_account_id) e User API key (prefixo NRAK-, diferente da
+# license key/ingest usada pelos agentes).
+new_relic_account_id = ""
+new_relic_api_key    = ""
+new_relic_region     = "US"
+
+tags = {
+  Owner      = "seu-usuario"
+  CostCenter = "fiap"
+}
