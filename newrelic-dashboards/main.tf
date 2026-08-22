@@ -68,8 +68,16 @@ resource "newrelic_one_dashboard" "oficina_mecanica" {
       }
     }
 
+    # Janela curta (3h) + granularidade automática, não 30 dias/1 dia como o
+    # widget anterior (bar chart, acima): esse é o painel pensado pro
+    # requisito do PDF de "dashboard com análise ao vivo" durante a gravação
+    # do vídeo — precisa reagir em minutos, não em dias. Com bucket diário,
+    # qualquer teste feito no mesmo dia colapsa num único ponto por linha
+    # (sem ponto anterior pra conectar, a linha não aparece — não é bug,
+    # é falta de dado espalhado em dias diferentes, o que só existe depois
+    # de uso real acumulado).
     widget_line {
-      title  = "Tendência do tempo por status, ao longo do tempo"
+      title  = "Tendência do tempo por status (últimas 3h, ao vivo)"
       row    = 4
       column = 7
       width  = 6
@@ -82,8 +90,8 @@ resource "newrelic_one_dashboard" "oficina_mecanica" {
           FROM ServiceOrderStatusChanged
           WHERE from_status IN ('em_diagnostico', 'em_execucao', 'finalizada')
           FACET from_status
-          TIMESERIES 1 day
-          SINCE 30 days ago
+          TIMESERIES
+          SINCE 3 hours ago
         NRQL
       }
     }
