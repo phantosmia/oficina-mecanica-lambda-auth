@@ -37,3 +37,8 @@ output "protected_proxy_base_url" {
   description = "URL base das rotas sensiveis protegidas por CPF, proxeadas ao Ingress do EKS (null se eks_ingress_hostname nao estiver configurado)."
   value       = var.eks_ingress_hostname != "" ? "${aws_apigatewayv2_api.main.api_endpoint}/api" : null
 }
+
+output "vpc_link_id" {
+  description = "ID do VPC Link do API Gateway ate o ALB interno do EKS (null se eks_ingress_hostname nao estiver configurado)."
+  value       = var.eks_ingress_hostname != "" ? aws_apigatewayv2_vpc_link.eks[0].id : null
+}

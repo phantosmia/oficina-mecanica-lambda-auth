@@ -25,6 +25,23 @@ data "terraform_remote_state" "app" {
   }
 }
 
+# Só é lido quando a rota proxy está habilitada (var.eks_ingress_hostname
+# preenchido) — fornece vpc_id e private_subnet_ids do EKS para o VPC Link
+# abaixo. Condicional pelo mesmo motivo do restante do proxy: enquanto a
+# variável estiver vazia (padrão), esta Lambda não deve exigir que o state do
+# oficina-mecanica-infra-kubernetes já exista.
+data "terraform_remote_state" "kubernetes" {
+  count = var.eks_ingress_hostname != "" ? 1 : 0
+
+  backend = "s3"
+
+  config = {
+    bucket = var.tf_state_bucket
+    key    = var.kubernetes_state_key
+    region = var.tf_state_region
+  }
+}
+
 # Lidas em tempo de apply e injetadas como variável de ambiente das Lambdas
 # (ver locals.rds_connection / locals.jwt_secret_key abaixo) — o mesmo padrão
 # já usado por infra/aws/main.tf no repositório principal, que grava
@@ -297,9 +314,42 @@ resource "aws_lambda_permission" "apigw_invoke_authorizer" {
 # Enquanto a variável estiver vazia (padrão), esta rota não é criada — o
 # restante da Lambda funciona normalmente sem ela.
 #
-# O ALB é internet-facing na porta 80 (ver k8s/overlays/aws/ingress.yaml do
-# repositório principal), então um integration_type HTTP_PROXY simples
-# alcança-o via internet, sem precisar de um VPC Link.
+# O ALB é interno (`alb.ingress.kubernetes.io/scheme: internal`, ver
+# k8s/overlays/aws/ingress.yaml do repositório principal) de propósito — para
+# que este API Gateway seja o único caminho de entrada público às rotas
+# protegidas (ADR-0006); do contrário, dava para contornar o Lambda Authorizer
+# batendo direto no ALB. Isso exige um VPC Link (o API Gateway não está em
+# nenhuma VPC por padrão) apontando para as subnets privadas do EKS — mesmas
+# subnets onde o AWS Load Balancer Controller cria o ALB interno, por causa
+# da tag `kubernetes.io/role/internal-elb` (oficina-mecanica-infra-kubernetes/main.tf).
+resource "aws_security_group" "vpc_link" {
+  count = var.eks_ingress_hostname != "" ? 1 : 0
+
+  name        = "${local.name_prefix}-vpc-link"
+  description = "Saida do VPC Link do API Gateway em direcao ao ALB interno do Ingress (ADR-0006)"
+  vpc_id      = data.terraform_remote_state.kubernetes[0].outputs.vpc_id
+
+  egress {
+    description = "HTTP para o ALB interno do Ingress da aplicacao principal"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [data.terraform_remote_state.kubernetes[0].outputs.vpc_cidr_block]
+  }
+
+  tags = local.common_tags
+}
+
+resource "aws_apigatewayv2_vpc_link" "eks" {
+  count = var.eks_ingress_hostname != "" ? 1 : 0
+
+  name               = "${local.name_prefix}-eks"
+  subnet_ids         = data.terraform_remote_state.kubernetes[0].outputs.private_subnet_ids
+  security_group_ids = [aws_security_group.vpc_link[0].id]
+
+  tags = local.common_tags
+}
+
 resource "aws_apigatewayv2_integration" "eks_proxy" {
   count = var.eks_ingress_hostname != "" ? 1 : 0
 
@@ -308,6 +358,8 @@ resource "aws_apigatewayv2_integration" "eks_proxy" {
   integration_method     = "ANY"
   integration_uri        = "http://${var.eks_ingress_hostname}/{proxy}"
   payload_format_version = "1.0"
+  connection_type        = "VPC_LINK"
+  connection_id          = aws_apigatewayv2_vpc_link.eks[0].id
 }
 
 # Convenção: qualquer rota sensível da aplicação principal que precise de

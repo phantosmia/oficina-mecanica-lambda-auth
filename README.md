@@ -116,11 +116,13 @@ Este repositório lê, do mesmo backend S3 compartilhado pelos quatro repositór
 
 - `oficina-mecanica-infra-banco-dados`: `vpc_id`, `private_subnet_ids` (para colocar a função `authenticate` na mesma VPC do RDS) e `rds_secret_arn` (host/porta/banco/usuário/senha do PostgreSQL).
 - `oficina-mecanica-fiap` (`infra/aws`): `app_secret_arn` (de onde vem o `JWT_SECRET_KEY` — o **mesmo** segredo que a aplicação principal usa para validar o token).
+- `oficina-mecanica-infra-kubernetes`: `vpc_id`, `vpc_cidr_block` e `private_subnet_ids` do EKS, para o VPC Link da rota proxy (ver "Rota protegida" abaixo) — só é lido quando `eks_ingress_hostname` está preenchido.
 
 ```mermaid
 flowchart LR
     DB["oficina-mecanica-infra-banco-dados"] -- "vpc_id, private_subnet_ids,<br/>rds_secret_arn" --> LAMBDA["este repositório"]
     APP["oficina-mecanica-fiap: infra/aws"] -- "app_secret_arn<br/>(JWT_SECRET_KEY)" --> LAMBDA
+    K8S["oficina-mecanica-infra-kubernetes"] -. "vpc_id, vpc_cidr_block,<br/>private_subnet_ids (se eks_ingress_hostname)" .-> LAMBDA
 ```
 
 **Isso estabelece uma nova posição na ordem de apply da Fase 3**: banco de dados → cluster Kubernetes → aplicação principal (`infra/aws`) → **esta Lambda** (ver o [diagrama de dependência completo](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/arquitetura.md#diagrama-de-dependência-entre-os-repositórios-terraform) no repositório principal). Se o state do ambiente lido (`dev`, `homologacao` ou `producao`) ainda não existir em algum dos dois repositórios acima, o `plan`/`apply` deste repositório falha imediatamente com `Unable to find remote state` — o mesmo comportamento já documentado nos outros repositórios, não um bug.
@@ -135,7 +137,7 @@ A função `authorizer` não faz nenhuma chamada de rede (o `JWT_SECRET_KEY` já
 
 ## Rota protegida (proxy para o EKS)
 
-`ANY /api/{proxy+}` — qualquer rota sensível da aplicação principal fica acessível em `<api_endpoint>/api/<caminho-original>` neste API Gateway (em vez de direto no ALB do EKS), validada pelo Lambda Authorizer (`jwt_client`) antes de ser repassada ao Ingress do cluster via `HTTP_PROXY` (o ALB é internet-facing na porta 80, então não é preciso VPC Link — ver [`k8s/overlays/aws/ingress.yaml`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/k8s/overlays/aws/ingress.yaml)).
+`ANY /api/{proxy+}` — qualquer rota sensível da aplicação principal fica acessível em `<api_endpoint>/api/<caminho-original>` neste API Gateway (em vez de direto no ALB do EKS), validada pelo Lambda Authorizer (`jwt_client`) antes de ser repassada ao Ingress do cluster via `HTTP_PROXY`. O ALB é **interno** (`alb.ingress.kubernetes.io/scheme: internal`, ver [`k8s/overlays/aws/ingress.yaml`](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/k8s/overlays/aws/ingress.yaml)) — de propósito, para que este API Gateway seja o único caminho de entrada público às rotas protegidas (ADR-0006); do contrário, dava para contornar o Lambda Authorizer batendo direto no ALB. Isso exige um `aws_apigatewayv2_vpc_link` até as subnets privadas do EKS (mesmas onde o AWS Load Balancer Controller cria o ALB interno, por causa da tag `kubernetes.io/role/internal-elb`), lido via `terraform_remote_state` do repositório `oficina-mecanica-infra-kubernetes` (`kubernetes_state_key`).
 
 Essa rota só é criada quando a variável `eks_ingress_hostname` está preenchida — o hostname do ALB não é um output de nenhum Terraform da Fase 3 (é atribuído em tempo de admissão pelo AWS Load Balancer Controller a partir do recurso `Ingress` do Kubernetes, depois que o cluster já está no ar). Obtenha-o e aplique novamente depois que o Ingress existir:
 

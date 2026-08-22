@@ -40,6 +40,12 @@ variable "app_state_key" {
   default     = "aws/dev/terraform.tfstate"
 }
 
+variable "kubernetes_state_key" {
+  description = "Key do state do repositório oficina-mecanica-infra-kubernetes no backend S3 compartilhado, de onde são lidos vpc_id e private_subnet_ids do EKS para o VPC Link do API Gateway até o ALB interno do Ingress (ADR-0006). Só é lido quando eks_ingress_hostname está preenchido. Ajuste para o ambiente real (ex.: kubernetes/homologacao/terraform.tfstate) ao aplicar em homologacao/producao."
+  type        = string
+  default     = "kubernetes/dev/terraform.tfstate"
+}
+
 variable "lambda_execution_role_arn" {
   description = "ARN de uma IAM role existente para a execução das duas Lambdas (autenticação e authorizer). Vazio (padrão) cria uma role própria com as permissões mínimas (logs + acesso a ENI de VPC). Preencha em labs que bloqueiam iam:CreateRole (ex.: AWS Academy, reaproveitando a LabRole)."
   type        = string

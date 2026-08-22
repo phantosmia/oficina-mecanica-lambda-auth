@@ -5,8 +5,9 @@ aws_region   = "us-east-1"
 tf_state_bucket = "oficina-mecanica-fiap-terraform-state"
 tf_state_region = "us-east-1"
 
-database_state_key = "database/dev/terraform.tfstate"
-app_state_key       = "aws/dev/terraform.tfstate"
+database_state_key   = "database/dev/terraform.tfstate"
+app_state_key        = "aws/dev/terraform.tfstate"
+kubernetes_state_key = "kubernetes/dev/terraform.tfstate"
 
 # Preencha com o ARN de uma role existente (ex.: LabRole) em labs que
 # bloqueiam iam:CreateRole (AWS Academy). Vazio cria uma role própria.
