@@ -61,6 +61,20 @@ locals {
 
   lambda_role_arn = var.lambda_execution_role_arn != "" ? var.lambda_execution_role_arn : aws_iam_role.lambda[0].arn
 
+  # ADR-0007: instrumentação via New Relic Lambda layer, em vez de importar
+  # um SDK em src/handler.py — troca de vendor de observabilidade no futuro
+  # não exige tocar no código da Lambda. Layer x86_64 (arquitetura default
+  # de aws_lambda_function quando `architectures` não é especificado); ARN
+  # da versão atual obtida em tempo de escrita via a API pública do New
+  # Relic (https://<region>.layers.newrelic-external.com/get-layers), não
+  # existe data source oficial do provider AWS/New Relic pra isso.
+  # nonsensitive(): só o booleano "está preenchida ou não" deixa de herdar a
+  # sensibilidade de var.new_relic_license_key — sem isso, handler/layers
+  # (que não contêm segredo nenhum) apareceriam como "(sensitive value)" no
+  # plan só por serem derivados de uma expressão que referencia a variável.
+  new_relic_enabled   = nonsensitive(var.new_relic_license_key != "")
+  new_relic_layer_arn = "arn:aws:lambda:${var.aws_region}:451483290750:layer:NewRelicPython312:80"
+
   common_tags = merge(
     {
       Project     = var.project_name
@@ -181,9 +195,10 @@ resource "aws_lambda_function" "authenticate" {
   filename         = data.archive_file.package.output_path
   source_code_hash = data.archive_file.package.output_base64sha256
 
-  handler = "handler.authenticate_handler"
+  handler = local.new_relic_enabled ? "newrelic_lambda_wrapper.handler" : "handler.authenticate_handler"
   runtime = "python3.12"
   role    = local.lambda_role_arn
+  layers  = local.new_relic_enabled ? [local.new_relic_layer_arn] : []
 
   memory_size = var.lambda_memory_size
   timeout     = var.lambda_timeout
@@ -194,16 +209,24 @@ resource "aws_lambda_function" "authenticate" {
   }
 
   environment {
-    variables = {
-      PGHOST                      = local.rds_connection.host
-      PGPORT                      = tostring(local.rds_connection.port)
-      PGDATABASE                  = local.rds_connection.dbname
-      PGUSER                      = local.rds_connection.username
-      PGPASSWORD                  = local.rds_connection.password
-      JWT_SECRET_KEY              = local.jwt_secret_key
-      JWT_ALGORITHM               = var.jwt_algorithm
-      ACCESS_TOKEN_EXPIRE_MINUTES = tostring(var.access_token_expire_minutes)
-    }
+    variables = merge(
+      {
+        PGHOST                      = local.rds_connection.host
+        PGPORT                      = tostring(local.rds_connection.port)
+        PGDATABASE                  = local.rds_connection.dbname
+        PGUSER                      = local.rds_connection.username
+        PGPASSWORD                  = local.rds_connection.password
+        JWT_SECRET_KEY              = local.jwt_secret_key
+        JWT_ALGORITHM               = var.jwt_algorithm
+        ACCESS_TOKEN_EXPIRE_MINUTES = tostring(var.access_token_expire_minutes)
+      },
+      local.new_relic_enabled ? {
+        NEW_RELIC_LAMBDA_HANDLER = "handler.authenticate_handler"
+        NEW_RELIC_LICENSE_KEY    = var.new_relic_license_key
+        NEW_RELIC_ACCOUNT_ID     = var.new_relic_account_id
+        NEW_RELIC_APP_NAME       = "${local.name_prefix}-auth-cpf"
+      } : {}
+    )
   }
 
   tags = local.common_tags
@@ -225,18 +248,27 @@ resource "aws_lambda_function" "authorizer" {
   filename         = data.archive_file.package.output_path
   source_code_hash = data.archive_file.package.output_base64sha256
 
-  handler = "handler.authorizer_handler"
+  handler = local.new_relic_enabled ? "newrelic_lambda_wrapper.handler" : "handler.authorizer_handler"
   runtime = "python3.12"
   role    = local.lambda_role_arn
+  layers  = local.new_relic_enabled ? [local.new_relic_layer_arn] : []
 
   memory_size = var.lambda_memory_size
   timeout     = var.lambda_timeout
 
   environment {
-    variables = {
-      JWT_SECRET_KEY = local.jwt_secret_key
-      JWT_ALGORITHM  = var.jwt_algorithm
-    }
+    variables = merge(
+      {
+        JWT_SECRET_KEY = local.jwt_secret_key
+        JWT_ALGORITHM  = var.jwt_algorithm
+      },
+      local.new_relic_enabled ? {
+        NEW_RELIC_LAMBDA_HANDLER = "handler.authorizer_handler"
+        NEW_RELIC_LICENSE_KEY    = var.new_relic_license_key
+        NEW_RELIC_ACCOUNT_ID     = var.new_relic_account_id
+        NEW_RELIC_APP_NAME       = "${local.name_prefix}-auth-authorizer"
+      } : {}
+    )
   }
 
   tags = local.common_tags

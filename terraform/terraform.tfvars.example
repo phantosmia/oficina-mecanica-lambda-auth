@@ -25,3 +25,10 @@ log_retention_days = 14
 # passo a passo (AWS CLI) no comentario do recurso
 # aws_apigatewayv2_integration.eks_proxy em main.tf.
 eks_alb_listener_arn = ""
+
+# License key/account do New Relic (ADR-0007). Vazia nao instrumenta as
+# Lambdas (handler/layer originais, sem variaveis NEW_RELIC_*). A integracao
+# AWS<->New Relic pra RDS/API Gateway fica num Terraform root separado —
+# ver ../newrelic-aws-integration/.
+new_relic_license_key = ""
+new_relic_account_id  = ""

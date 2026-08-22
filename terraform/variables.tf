@@ -88,6 +88,19 @@ variable "eks_alb_listener_arn" {
   default     = ""
 }
 
+variable "new_relic_license_key" {
+  description = "License key (ingest) do New Relic (ADR-0007). Vazia (padrão) mantém as duas Lambdas sem instrumentação — handler e layer originais, sem variáveis NEW_RELIC_*."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "new_relic_account_id" {
+  description = "Account ID do New Relic (ADR-0007). Usado nas variáveis de ambiente das Lambdas quando new_relic_license_key está preenchida. A integração AWS↔New Relic para RDS/API Gateway (mesmo account ID, mais a user API key) fica num Terraform root separado — ver newrelic-aws-integration/."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags adicionais aplicadas aos recursos AWS."
   type        = map(string)

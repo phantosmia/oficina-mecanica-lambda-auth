@@ -145,6 +145,9 @@ jobs:
         run: terraform init -backend-config=backend.hcl
 
       - name: Terraform plan
+        env:
+          TF_VAR_new_relic_license_key: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
+          TF_VAR_new_relic_account_id: ${{ secrets.NEW_RELIC_ACCOUNT_ID }}
         run: |
           terraform plan -out=tfplan \
             -var="environment=${{ github.ref_name }}" \
