@@ -87,8 +87,13 @@ resource "null_resource" "build" {
   }
 
   provisioner "local-exec" {
+    # local-exec roda via /bin/sh, que em muitos sistemas (Debian/Ubuntu,
+    # inclusive os runners do GitHub Actions) é dash, não bash — "pipefail"
+    # é bashismo e dash rejeita com "Illegal option -o pipefail". O script
+    # não usa nenhum pipe (|), então "pipefail" nunca fez diferença aqui;
+    # "set -eu" já é suficiente e é POSIX (funciona em qualquer /bin/sh).
     command = <<-EOT
-      set -euo pipefail
+      set -eu
       rm -rf "${path.module}/build"
       mkdir -p "${path.module}/build"
       pip install --quiet -r "${path.module}/../requirements.txt" -t "${path.module}/build" --no-cache-dir
