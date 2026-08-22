@@ -150,6 +150,7 @@ jobs:
             -var="environment=${{ github.ref_name }}" \
             -var="database_state_key=database/${{ github.ref_name }}/terraform.tfstate" \
             -var="app_state_key=aws/${{ github.ref_name }}/terraform.tfstate" \
+            -var="kubernetes_state_key=kubernetes/${{ github.ref_name }}/terraform.tfstate" \
             -var="tf_state_bucket=${{ env.TF_STATE_BUCKET }}" \
             -var="tf_state_region=${{ env.TF_STATE_REGION }}"
 
