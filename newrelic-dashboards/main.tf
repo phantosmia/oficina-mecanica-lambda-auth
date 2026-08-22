@@ -31,7 +31,12 @@ resource "newrelic_one_dashboard" "oficina_mecanica" {
       }
     }
 
-    widget_bar {
+    # widget_line, não widget_bar: gráfico de barras no New Relic é pensado
+    # pra comparação por FACET (uma barra por valor), não pra série temporal
+    # — combinado com TIMESERIES ele não renderiza os buckets corretamente
+    # (aparecia zerado mesmo com dado real por trás, confirmado via NerdGraph
+    # rodando a mesma query fora do dashboard).
+    widget_line {
       title  = "Volume diário de ordens de serviço"
       row    = 1
       column = 4
