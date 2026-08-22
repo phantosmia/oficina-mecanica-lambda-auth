@@ -10,6 +10,7 @@ Essa decisão de arquitetura está documentada no repositório da aplicação pr
 - [ADR-0004 — API Gateway como ponto único de entrada e autorização](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0004-api-gateway-como-ponto-de-entrada.md)
 - [ADR-0005 — Lambda de autenticação na VPC do banco de dados](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0005-lambda-auth-na-vpc-do-banco.md)
 - [ADR-0006 — ALB interno + VPC Link como único ponto de entrada público](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0006-alb-interno-vpc-link.md)
+- [ADR-0007 — New Relic como plataforma de observabilidade](https://github.com/phantosmia/oficina-mecanica-fiap/blob/main/docs/adrs/0007-new-relic-como-plataforma-de-observabilidade.md) — as duas Lambdas são instrumentadas via New Relic Lambda layer quando `new_relic_license_key` está preenchida.
 
 ## Arquitetura
 
@@ -186,6 +187,8 @@ Workflow em [`.github/workflows/ci.yml`](.github/workflows/ci.yml), com três jo
 | Secret | `AWS_SECRET_ACCESS_KEY` | Secret key temporária do AWS Academy Lab |
 | Secret | `AWS_SESSION_TOKEN` | Session token temporário do AWS Academy Lab |
 | Secret | `TF_BACKEND_CONFIG` | Conteúdo completo de um `backend.hcl` (alternativa às variables abaixo) |
+| Secret | `NEW_RELIC_LICENSE_KEY` | ADR-0007. Vazio não instrumenta as Lambdas |
+| Secret | `NEW_RELIC_ACCOUNT_ID` | ADR-0007. Só usado quando `NEW_RELIC_LICENSE_KEY` está preenchido |
 | Variable | `AWS_REGION` | Região AWS |
 | Variable | `TF_STATE_BUCKET` | Bucket S3 do state (mesmo do `oficina-mecanica-fiap`) |
 | Variable | `TF_LOCK_TABLE` | Tabela DynamoDB de lock (mesma do `oficina-mecanica-fiap`) |

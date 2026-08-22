@@ -88,6 +88,19 @@ variable "eks_alb_listener_arn" {
   default     = ""
 }
 
+variable "new_relic_license_key" {
+  description = "License key (ingest) do New Relic (ADR-0007). Vazia (padrão) mantém as duas Lambdas sem instrumentação — handler e layer originais, sem variáveis NEW_RELIC_*."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "new_relic_account_id" {
+  description = "Account ID do New Relic (ADR-0007). Só é usado quando new_relic_license_key está preenchida."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags adicionais aplicadas aos recursos AWS."
   type        = map(string)
