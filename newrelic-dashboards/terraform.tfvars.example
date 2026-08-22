@@ -1,0 +1,7 @@
+new_relic_account_id = ""
+new_relic_api_key    = ""
+new_relic_region      = "US"
+
+app_name              = "oficina-mecanica-api"
+kubernetes_namespace  = "oficina-mecanica"
+api_container_name    = "api"

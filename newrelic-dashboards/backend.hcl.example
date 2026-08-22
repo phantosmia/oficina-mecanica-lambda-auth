@@ -1,0 +1,5 @@
+bucket         = "SEU_BUCKET_DE_STATE"
+key            = "newrelic-dashboards/dev/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "SUA_TABELA_DE_LOCK"
+encrypt        = true
