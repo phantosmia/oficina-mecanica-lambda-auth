@@ -74,19 +74,40 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Terraform init (sem backend remoto — plan de validação, não usa state real)
-        run: terraform init -backend=false
+      - name: Terraform init (backend local — plan de validação, não usa state real)
+        # Terraform >= 1.15 recusa "terraform plan" após "init -backend=false"
+        # quando a config declara backend "s3" ("Backend initialization
+        # required" mesmo com -backend=false) — o override para backend
+        # "local" contorna sem precisar tocar no state real só para validar
+        # um PR.
+        run: |
+          cat > override.tf <<'EOF'
+          terraform {
+            backend "local" {}
+          }
+          EOF
+          terraform init
 
       - name: Terraform validate
         run: terraform validate
 
-      # Lê o state real (dev) dos repositórios oficina-mecanica-infra-banco-dados
-      # e oficina-mecanica-fiap (infra/aws) via terraform_remote_state — se o
-      # ambiente "dev" ainda não tiver sido aplicado em algum deles, este plan
-      # falha com "Unable to find remote state" (comportamento esperado, ver
-      # README: "Ordem de apply entre os repositórios").
+      # Lê o state real dos repositórios oficina-mecanica-infra-banco-dados,
+      # oficina-mecanica-infra-kubernetes e oficina-mecanica-fiap (infra/aws)
+      # via terraform_remote_state — aponta para homologacao (não para dev,
+      # que foi destruído deliberadamente nesta sessão, ver docs/sessoes/ em
+      # oficina-mecanica-fiap). Se o ambiente apontado ainda não tiver sido
+      # aplicado em algum dos três, este plan falha com "Unable to find
+      # remote state" (comportamento esperado, ver README: "Ordem de apply
+      # entre os repositórios").
       - name: Terraform plan
-        run: terraform plan -var="environment=dev-preview" -var="tf_state_bucket=${{ env.TF_STATE_BUCKET }}" -var="tf_state_region=${{ env.TF_STATE_REGION }}"
+        run: |
+          terraform plan \
+            -var="environment=dev-preview" \
+            -var="database_state_key=database/homologacao/terraform.tfstate" \
+            -var="app_state_key=aws/homologacao/terraform.tfstate" \
+            -var="kubernetes_state_key=kubernetes/homologacao/terraform.tfstate" \
+            -var="tf_state_bucket=${{ env.TF_STATE_BUCKET }}" \
+            -var="tf_state_region=${{ env.TF_STATE_REGION }}"
 
   apply:
     name: Apply (${{ github.ref_name }})
