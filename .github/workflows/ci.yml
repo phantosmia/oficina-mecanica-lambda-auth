@@ -19,6 +19,10 @@ env:
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
   TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION || 'us-east-1' }}
   TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+  # Vazio por padrão cria uma IAM role própria via Terraform — bloqueado no
+  # AWS Academy Lab (iam:CreateRole negado). Preenchendo essa variable de
+  # repositório com o ARN da LabRole, reaproveita a role já existente.
+  TF_VAR_lambda_execution_role_arn: ${{ vars.LAMBDA_EXECUTION_ROLE_ARN }}
 
 jobs:
   test:
