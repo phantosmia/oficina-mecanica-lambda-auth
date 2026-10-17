@@ -6,6 +6,9 @@ on:
     branches:
       - homologacao
       - producao
+  # Reaplica sem precisar de commit novo (ex.: depois de o AWS Academy Lab
+  # ser resetado). Rode na branch do ambiente (homologacao ou producao).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -115,7 +118,7 @@ jobs:
 
   apply:
     name: Apply (${{ github.ref_name }})
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name }}
